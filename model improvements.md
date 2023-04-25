@@ -1,7 +1,5 @@
 ## TO DO
 
-- increase in local heterogeneity through degradation
-
 ## COMPLETE
 
 - null model without cAMP export
