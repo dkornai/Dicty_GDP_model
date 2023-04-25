@@ -1,0 +1,130 @@
+# logic of boolean gene network. 
+@njit(flt_1d (i8,  int_1d, flt_1d_ro,  flt_1d_ro ))
+def gdp_bc(   t,   state,  ext_signal, prod_rate):
+    # indexes belonging to environmental variables
+    SIG_I = {'bac': 0, 'PSF': 1, 'CMF': 2, 'cAMP': 3,}
+    
+    # inexes belonging to internal state variables
+    S_I = {          
+        # sensors for external signalling molecules
+    "exts_bac"  : 0,  "exts_PSF"  : 1,  "exts_CMF"  : 2,  "exts_cAMP" : 3,
+        # cmf latch     
+    "CMF_latch" : 4,
+        # internal mRNA levels and internal sensors of mRNA levels
+    "mrna_YakA" : 5,  "ints_YakA" : 6,
+    "mrna_PKA"  : 7,  "ints_PKA"  : 8,
+    "mrna_ACA"  : 9,  "ints_ACA"  : 10,
+    "mrna_CAR1" : 11, "ints_CAR1" : 12,
+    "mlcl_cAMP" : 13, "ints_cAMP" : 14,
+        # whether to produce or consume chemicals
+    "eat_bac"   : 15, "prod_PSF"  : 16, "prod_CMF"  : 17, "prod_cAMP" : 18,
+        # sensing and production biases    
+    "exts_bias" : 19, "prod_bias" : 20,
+        # expression level of developmental genes    
+    "dev_genes" : 21, "agg_comp_t": 22,
+        # external switch for cAMP export (otherwise all cAMP is maintained internally)
+    "exprt_cAMP": 23,
+    }
+    
+    MRNA_I = np.array(  [5, 7, 9, 11, 13, 21], dtype = np.int64)
+    
+    # rescaling of sensing and production bias to center around 1.0
+    exts_bias = state[S_I["exts_bias"]]/100
+    prod_bias = state[S_I["prod_bias"]]/100
+    
+    # clip mrna levels
+    state[MRNA_I] = np.clip(state[MRNA_I], a_min = 0, a_max = 100)
+    
+    
+    ## sensing external signals
+    state[0] = sms(logistic_sense((ext_signal[0]*exts_bias)*10))  # multiplier on bacteria is so abs. values can be in line with other external signals
+    state[1] = sms(logistic_sense((ext_signal[1]*exts_bias)))
+    state[2] = sms(logistic_sense((ext_signal[2]*exts_bias)))
+    state[3] = sms(logistic_sense((ext_signal[3]*exts_bias)))
+    
+    ## sense internal mRNA concentrations
+    state[6] = sms(logistic_sense(state[5]))
+    state[8] = sms(logistic_sense(state[7]))
+    state[10] = sms(logistic_sense(state[9]))
+    state[12] = sms(logistic_sense(state[11]))
+    state[14] = sms(logistic_sense(state[13]))
+    
+    
+    # stop eating bacteria if they are not available
+    if ext_signal[0] <= 0: 
+        state[S_I["eat_bac"]] = 0
+    else:
+        state[S_I["eat_bac"]] = 1
+    
+
+    ## adjust internal mRNA levels
+    # increase YakA mrna levels if there are no bacteria (starvation)
+    if not state[0] and state[1]:
+        state[5] += 15
+    
+    # increase PKA mrna based on YakA mrna (starvation) levels
+    if state[6]:
+        state[7] += 5
+    
+    # increase CAR1 mrna and ACA mrna based on PKA mrna levels
+    if state[S_I["ints_PKA"]]:
+        if sms(50):
+            state[11] += 2
+        else:
+            state[9] += 2
+    
+    # further increase CAR1 mrna levels if extrnal cAMP is detected and the cell is starving
+    if state[S_I["ints_YakA" ]] and state[S_I["exts_cAMP" ]]:
+        state[11] += 1
+    
+    # enable CAR1 activation of ACA if CMF was detected and the cell is starving
+    if state[S_I["exts_CMF"]] and state[6]:
+        state[4] = 1
+        
+    # further increase ACA mrna if CAR1 mrna is present at high levels and the latch is closed
+    if state[4] and state[12]:
+        state[9] += 1
+    
+    # increase cAMP mrna levels if ACA is active
+    if state[8]:
+        state[13] += 2
+    
+    
+    ## set the export of signalling molecules
+    # psf is always produced
+    state[S_I["prod_PSF"]] = 1 
+    
+    # activate CMF export based on starvation (YakA) status
+    if not state[0]:
+        state[17] = 1
+    else:
+        state[17] = 0
+
+    # export cAMP if mrna_ACA is active
+    if state[8]:
+        state[18] = 1
+    else:
+        state[18] = 0
+    
+    ## express developmental genes
+    if state[8] or state[3]:
+        state[21] += 1
+        
+    ## check timing of inital aggregation competence:
+    if state[22] == -1:
+        if state[21] > 95:
+            state[22] = t
+    
+    ## secretion
+    signal_mlcl_secrete = [
+        prod_bias*prod_rate[SIG_I["bac"] ]*state[S_I["eat_bac"]]  , # bac
+        prod_bias*prod_rate[SIG_I["PSF"] ]*state[S_I["prod_PSF"]] , # PSF
+        prod_bias*prod_rate[SIG_I["CMF"] ]*state[17] , # CMF
+        prod_bias*prod_rate[SIG_I["cAMP"]]*state[18]*state[13]*state[S_I["exprt_cAMP"]], # cAMP
+    ]
+    
+    #print(state)
+    #print(signal_mlcl_secrete)  
+
+    
+    return np.array(signal_mlcl_secrete)
